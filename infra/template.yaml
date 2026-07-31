@@ -388,16 +388,15 @@ Resources:
                 Action:
                   - s3:ListBucket
                 Resource: !GetAtt ArtifactBucket.Arn
-              # EB's control plane touches its own per-region default bucket
-              # (elasticbeanstalk-<region>-<account>) on UpdateEnvironment,
-              # even when it already exists - IAM still requires permission
-              # to attempt the call, not just to succeed at it.
+              # EB's control plane makes a whole sequence of undocumented S3
+              # admin calls against its own per-region default bucket
+              # (elasticbeanstalk-<region>-<account>) on every UpdateEnvironment
+              # - CreateBucket, PutBucketOwnershipControls, and more, even
+              # when the bucket already exists. Rather than chase each one
+              # individually, grant full access to just this one bucket -
+              # it only ever holds EB's own operational logs, nothing sensitive.
               - Effect: Allow
-                Action:
-                  - s3:CreateBucket
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:ListBucket
+                Action: s3:*
                 Resource:
                   - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}"
                   - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}/*"
