@@ -400,6 +400,17 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}"
                   - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}/*"
+              # EB's UpdateEnvironment orchestration reads its own auto-generated
+              # nested CloudFormation stack (always named "awseb-e-*", created
+              # after the environment exists so its exact name can't be
+              # referenced directly) to compute ASG/launch-config changes.
+              - Effect: Allow
+                Action:
+                  - cloudformation:GetTemplate
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:DescribeStackEvents
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/awseb-e-*/*"
               - Effect: Allow
                 Action:
                   - elasticbeanstalk:CreateApplicationVersion
