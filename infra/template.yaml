@@ -24,7 +24,6 @@ Metadata:
         Parameters:
           - DBName
           - DBMasterUsername
-          - DBMasterPassword
       - Label:
           default: GitHub Actions OIDC
         Parameters:
@@ -72,12 +71,6 @@ Parameters:
   DBMasterUsername:
     Type: String
     Default: labadmin
-
-  DBMasterPassword:
-    Type: String
-    NoEcho: true
-    MinLength: 8
-    Description: Master password for RDS, supplied at stack creation, never stored in the template.
 
   GitHubOrg:
     Type: String
@@ -142,6 +135,7 @@ Resources:
   BucketCleanupFunctionRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub "${AppName}-bucket-cleanup-role"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -174,6 +168,7 @@ Resources:
   BucketCleanupFunction:
     Type: AWS::Lambda::Function
     Properties:
+      FunctionName: !Sub "${AppName}-bucket-cleanup"
       Runtime: python3.12
       Handler: index.handler
       Timeout: 300
@@ -247,6 +242,7 @@ Resources:
   DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
+      DBSubnetGroupName: !Sub "${AppName}-db-subnet-group"
       DBSubnetGroupDescription: Subnets for the lab RDS instance
       SubnetIds: !Ref SubnetIds
 
@@ -255,6 +251,7 @@ Resources:
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
+      DBInstanceIdentifier: !Sub "${AppName}-db"
       Engine: postgres
       # EngineVersion intentionally omitted - lets RDS pick the current
       # default so the template doesn't rot when AWS deprecates a pinned version.
@@ -263,7 +260,11 @@ Resources:
       StorageType: gp3
       DBName: !Ref DBName
       MasterUsername: !Ref DBMasterUsername
-      MasterUserPassword: !Ref DBMasterPassword
+      # Pulled from SSM Parameter Store at deploy time, never a CFN parameter -
+      # a Git-sync deployment file commits its parameters as plaintext to the
+      # repo, so the password can never be one. Create this once, out of band:
+      # aws ssm put-parameter --name "/${AppName}/db-master-password" --type SecureString --value "..."
+      MasterUserPassword: !Sub "{{resolve:ssm-secure:/${AppName}/db-master-password}}"
       DBSubnetGroupName: !Ref DBSubnetGroup
       VPCSecurityGroups:
         - !Ref RDSSecurityGroup
@@ -278,6 +279,7 @@ Resources:
   EBServiceRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub "${AppName}-eb-service-role"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -295,6 +297,7 @@ Resources:
   EBInstanceRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub "${AppName}-eb-instance-role"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -308,6 +311,7 @@ Resources:
   EBInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
+      InstanceProfileName: !Sub "${AppName}-eb-instance-profile"
       Roles:
         - !Ref EBInstanceRole
 
@@ -431,7 +435,7 @@ Resources:
           Value: !Ref DBMasterUsername
         - Namespace: aws:elasticbeanstalk:application:environment
           OptionName: DB_PASSWORD
-          Value: !Ref DBMasterPassword
+          Value: !Sub "{{resolve:ssm-secure:/${AppName}/db-master-password}}"
 
 Outputs:
   EnvironmentURL:
