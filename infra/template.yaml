@@ -307,6 +307,14 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier
+      Policies:
+        - PolicyName: ReadDbPasswordFromSsm
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AppName}/db-master-password"
 
   EBInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -434,8 +442,12 @@ Resources:
           OptionName: DB_USER
           Value: !Ref DBMasterUsername
         - Namespace: aws:elasticbeanstalk:application:environment
-          OptionName: DB_PASSWORD
-          Value: !Sub "{{resolve:ssm-secure:/${AppName}/db-master-password}}"
+          # CloudFormation doesn't support ssm-secure dynamic references inside
+          # EB OptionSettings (unlike RDS's MasterUserPassword above, which does
+          # support it) - so the instance fetches the actual secret itself at
+          # runtime via its own IAM role, using this parameter name as a pointer.
+          OptionName: DB_PASSWORD_PARAM
+          Value: !Sub "/${AppName}/db-master-password"
 
 Outputs:
   EnvironmentURL:
