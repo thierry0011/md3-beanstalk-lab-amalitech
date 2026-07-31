@@ -41,11 +41,19 @@ jobs:
 
       - name: Create Elastic Beanstalk application version
         run: |
-          aws elasticbeanstalk create-application-version \
+          EXISTING=$(aws elasticbeanstalk describe-application-versions \
             --application-name "${{ vars.EB_APPLICATION_NAME }}" \
-            --version-label "$VERSION" \
-            --source-bundle S3Bucket="${{ vars.EB_S3_BUCKET }}",S3Key="app-$VERSION.zip" \
-            --description "Deployed from $GITHUB_SHA"
+            --version-labels "$VERSION" \
+            --query "ApplicationVersions[0].VersionLabel" --output text)
+          if [ "$EXISTING" = "$VERSION" ]; then
+            echo "Version $VERSION already exists (re-run of the same commit) - reusing it."
+          else
+            aws elasticbeanstalk create-application-version \
+              --application-name "${{ vars.EB_APPLICATION_NAME }}" \
+              --version-label "$VERSION" \
+              --source-bundle S3Bucket="${{ vars.EB_S3_BUCKET }}",S3Key="app-$VERSION.zip" \
+              --description "Deployed from $GITHUB_SHA"
+          fi
 
       - name: Deploy new version to the environment
         run: |
