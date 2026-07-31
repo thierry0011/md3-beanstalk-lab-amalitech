@@ -408,6 +408,7 @@ Resources:
                 Action:
                   - cloudformation:GetTemplate
                   - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackResource
                   - cloudformation:DescribeStackResources
                   - cloudformation:DescribeStackEvents
                 Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/awseb-e-*/*"
