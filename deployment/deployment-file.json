@@ -5,6 +5,8 @@
     "SubnetIds": "subnet-01520499c7c99f415,subnet-019274758db017ae8",
     "GitHubOrg": "thierry0011",
     "GitHubRepo": "md3-beanstalk-lab-amalitech",
+    "GitHubOwnerId": "210671159",
+    "GitHubRepoId": "1318038747",
     "GitHubBranch": "main",
     "CreateOIDCProvider": "false",
     "ExistingOIDCProviderArn": "arn:aws:iam::711387109786:oidc-provider/token.actions.githubusercontent.com"

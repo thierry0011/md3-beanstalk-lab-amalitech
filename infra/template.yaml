@@ -29,6 +29,8 @@ Metadata:
         Parameters:
           - GitHubOrg
           - GitHubRepo
+          - GitHubOwnerId
+          - GitHubRepoId
           - GitHubBranch
           - CreateOIDCProvider
           - ExistingOIDCProviderArn
@@ -74,11 +76,25 @@ Parameters:
 
   GitHubOrg:
     Type: String
-    Description: GitHub org or username, e.g. "thierry-kwizera".
+    Description: GitHub org or username, e.g. "thierry-kwizera" - for reference/labeling only, not used in the trust policy (see GitHubOwnerId/GitHubRepoId).
 
   GitHubRepo:
     Type: String
-    Description: GitHub repo name, e.g. "eb-python-lab".
+    Description: GitHub repo name, e.g. "eb-python-lab" - for reference/labeling only, not used in the trust policy (see GitHubOwnerId/GitHubRepoId).
+
+  GitHubOwnerId:
+    Type: String
+    Description: >
+      Numeric, immutable GitHub owner ID (not the username). This is what the
+      trust policy actually pins to - names can be renamed/reused, this ID
+      can't. Get it with: curl -s https://api.github.com/repos/OWNER/REPO
+      and read the "owner.id" field.
+
+  GitHubRepoId:
+    Type: String
+    Description: >
+      Numeric, immutable GitHub repository ID (not the repo name). Same
+      curl command as above, read the top-level "id" field.
 
   GitHubBranch:
     Type: String
@@ -353,8 +369,11 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-              StringLike:
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:ref:refs/heads/${GitHubBranch}"
+                # Exact match on GitHub's immutable-ID subject format
+                # (repo:org@ownerId/repo@repoId:ref:...) - pins trust to this
+                # specific repo's permanent identity, not its renamable name,
+                # and with no wildcard there's nothing for a lookalike name to match.
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}@${GitHubOwnerId}/${GitHubRepo}@${GitHubRepoId}:ref:refs/heads/${GitHubBranch}"
       Policies:
         - PolicyName: DeployToElasticBeanstalk
           PolicyDocument:
