@@ -411,7 +411,14 @@ Resources:
                   - cloudformation:DescribeStackResource
                   - cloudformation:DescribeStackResources
                   - cloudformation:DescribeStackEvents
+                  - cloudformation:UpdateStack
                 Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/awseb-e-*/*"
+              # Read on the ASG that lives inside EB's nested stack - name
+              # isn't known ahead of time, same reasoning as the EC2 block below.
+              - Effect: Allow
+                Action:
+                  - autoscaling:DescribeAutoScalingGroups
+                Resource: "*"
               # Same read-only EC2 validation lookups the CFN execution role
               # already needed (see Ec2ReadOnly below) - UpdateEnvironment
               # performs these under the calling principal too, not just at
