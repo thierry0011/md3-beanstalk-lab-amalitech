@@ -1,0 +1,3 @@
+template-file-path: infra/template.yaml
+parameters: {}
+tags: {}
