@@ -411,6 +411,22 @@ Resources:
                   - cloudformation:DescribeStackResources
                   - cloudformation:DescribeStackEvents
                 Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/awseb-e-*/*"
+              # Same read-only EC2 validation lookups the CFN execution role
+              # already needed (see Ec2ReadOnly below) - UpdateEnvironment
+              # performs these under the calling principal too, not just at
+              # stack-creation time.
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeAvailabilityZones
+                  - ec2:DescribeAccountAttributes
+                  - ec2:DescribeImages
+                  - ec2:DescribeKeyPairs
+                  - ec2:DescribeInstances
+                  - ec2:DescribeAddresses
+                Resource: "*"
               - Effect: Allow
                 Action:
                   - elasticbeanstalk:CreateApplicationVersion
