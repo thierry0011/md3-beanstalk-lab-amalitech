@@ -400,6 +400,17 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}"
                   - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}/*"
+              # CloudFormation's own auto-managed per-account template-storage
+              # bucket (fixed "cf-templates-" prefix, random per-account hash
+              # not derivable from any pseudo-parameter) - UpdateStack on the
+              # nested awseb-e-* stack reads/writes its template body here.
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - "arn:aws:s3:::cf-templates-*"
+                  - "arn:aws:s3:::cf-templates-*/*"
               # EB's UpdateEnvironment orchestration reads its own auto-generated
               # nested CloudFormation stack (always named "awseb-e-*", created
               # after the environment exists so its exact name can't be
@@ -413,11 +424,36 @@ Resources:
                   - cloudformation:DescribeStackEvents
                   - cloudformation:UpdateStack
                 Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/awseb-e-*/*"
-              # Read on the ASG that lives inside EB's nested stack - name
-              # isn't known ahead of time, same reasoning as the EC2 block below.
+              # The ASG this role manages lives inside EB's own nested stack,
+              # so its name isn't known ahead of time - and since UpdateStack
+              # now modifies it directly under this role (not a separate EB
+              # service-linked role, confirmed by the errors so far all
+              # naming this role), full autoscaling:* stops further
+              # whack-a-mole on this one non-sensitive, narrowly-used service.
+              - Effect: Allow
+                Action: autoscaling:*
+                Resource: "*"
+              # EB's nested stack manages a Launch Template (newer EB platforms
+              # use Launch Templates, not Launch Configurations) and CloudWatch
+              # alarms for health-based instance recycling - both get updated
+              # as part of applying a new ASG/launch config, same as above.
               - Effect: Allow
                 Action:
-                  - autoscaling:DescribeAutoScalingGroups
+                  - ec2:CreateLaunchTemplate
+                  - ec2:CreateLaunchTemplateVersion
+                  - ec2:ModifyLaunchTemplate
+                  - ec2:DescribeLaunchTemplates
+                  - ec2:DescribeLaunchTemplateVersions
+                  - ec2:DeleteLaunchTemplateVersions
+                  - ec2:CreateTags
+                  - ec2:DescribeInstanceTypes
+                  - ec2:DescribeInstanceStatus
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:DeleteAlarms
                 Resource: "*"
               # Same read-only EC2 validation lookups the CFN execution role
               # already needed (see Ec2ReadOnly below) - UpdateEnvironment
