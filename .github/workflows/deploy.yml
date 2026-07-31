@@ -1,0 +1,69 @@
+name: Deploy to Elastic Beanstalk
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: eb-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive version from commit SHA
+        run: echo "VERSION=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Stamp version file
+        run: echo "$VERSION" > version.txt
+
+      - name: Package source bundle
+        run: zip -r "app-$VERSION.zip" application.py requirements.txt Procfile version.txt
+
+      - name: Configure AWS credentials (OIDC, no static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload source bundle to S3
+        run: aws s3 cp "app-$VERSION.zip" "s3://${{ vars.EB_S3_BUCKET }}/app-$VERSION.zip"
+
+      - name: Create Elastic Beanstalk application version
+        run: |
+          aws elasticbeanstalk create-application-version \
+            --application-name "${{ vars.EB_APPLICATION_NAME }}" \
+            --version-label "$VERSION" \
+            --source-bundle S3Bucket="${{ vars.EB_S3_BUCKET }}",S3Key="app-$VERSION.zip" \
+            --description "Deployed from $GITHUB_SHA"
+
+      - name: Deploy new version to the environment
+        run: |
+          aws elasticbeanstalk update-environment \
+            --environment-name "${{ vars.EB_ENVIRONMENT_NAME }}" \
+            --version-label "$VERSION"
+
+      - name: Wait for the environment to finish updating
+        run: |
+          aws elasticbeanstalk wait environment-updated \
+            --application-name "${{ vars.EB_APPLICATION_NAME }}" \
+            --environment-names "${{ vars.EB_ENVIRONMENT_NAME }}"
+
+      - name: Verify the deployed version responds
+        run: |
+          URL=$(aws elasticbeanstalk describe-environments \
+            --environment-names "${{ vars.EB_ENVIRONMENT_NAME }}" \
+            --query "Environments[0].CNAME" --output text)
+          echo "Checking http://$URL/"
+          RESPONSE=$(curl -sf "http://$URL/")
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep -q "\"$VERSION\"" || { echo "::error::Live version does not match $VERSION"; exit 1; }

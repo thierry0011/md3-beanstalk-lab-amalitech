@@ -1,0 +1,462 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Ephemeral lab stack for the Elastic Beanstalk CI/CD demo: S3 artifact bucket,
+  RDS Postgres, Elastic Beanstalk (Python) application/environment, and the
+  IAM roles GitHub Actions needs to deploy new versions via OIDC.
+  Everything here is created and destroyed as one stack.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Networking (pick your default VPC)
+        Parameters:
+          - VpcId
+          - SubnetIds
+      - Label:
+          default: Elastic Beanstalk
+        Parameters:
+          - AppName
+          - EnvironmentName
+          - SolutionStackName
+      - Label:
+          default: Database
+        Parameters:
+          - DBName
+          - DBMasterUsername
+          - DBMasterPassword
+      - Label:
+          default: GitHub Actions OIDC
+        Parameters:
+          - GitHubOrg
+          - GitHubRepo
+          - GitHubBranch
+          - CreateOIDCProvider
+          - ExistingOIDCProviderArn
+
+Parameters:
+  AppName:
+    Type: String
+    Default: beanstalk-lab-app
+    Description: Elastic Beanstalk application name.
+
+  EnvironmentName:
+    Type: String
+    Default: beanstalk-lab-env
+    Description: Elastic Beanstalk environment name.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy into (your account's default VPC is fine).
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >
+      At least 2 PUBLIC subnets from the VPC above, in different AZs
+      (needed for the RDS subnet group even though RDS itself stays private).
+      The default VPC's subnets qualify.
+
+  SolutionStackName:
+    Type: String
+    Default: "64bit Amazon Linux 2023 v4.13.5 running Python 3.12"
+    Description: >
+      EB platform. AWS deprecates old platform versions over time - if stack
+      creation fails on this, run:
+      aws elasticbeanstalk list-available-solution-stacks --query "SolutionStacks[?contains(@,'Python')]"
+      and pass the current string as a parameter override.
+
+  DBName:
+    Type: String
+    Default: labdb
+
+  DBMasterUsername:
+    Type: String
+    Default: labadmin
+
+  DBMasterPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Master password for RDS, supplied at stack creation, never stored in the template.
+
+  GitHubOrg:
+    Type: String
+    Description: GitHub org or username, e.g. "thierry-kwizera".
+
+  GitHubRepo:
+    Type: String
+    Description: GitHub repo name, e.g. "eb-python-lab".
+
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: Branch the deploy role trusts. Keep this narrow - do not widen to "*".
+
+  CreateOIDCProvider:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: >
+      Set to "false" if your AWS account already has a GitHub OIDC provider
+      registered (there can only be one per URL per account) and supply its
+      ARN in ExistingOIDCProviderArn instead.
+
+  ExistingOIDCProviderArn:
+    Type: String
+    Default: ""
+    Description: Only used when CreateOIDCProvider is "false".
+
+Conditions:
+  ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, "true"]
+
+Resources:
+
+  # ---------------------------------------------------------------------
+  # S3 artifact bucket - holds the zips GitHub Actions uploads
+  # ---------------------------------------------------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      # Fixed, deterministic name (not auto-generated) so it's identical
+      # across every delete/recreate cycle - GitHub Actions variables never
+      # need to be touched again after the first stack creation.
+      BucketName: !Sub "${AppName}-artifacts-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # CloudFormation refuses to delete a non-empty bucket, and versioning means
+  # "empty" includes every version + delete marker. This custom resource runs
+  # on stack DELETE only, purges the bucket, then lets ArtifactBucket delete
+  # cleanly - so `delete-stack` really does remove everything in one shot.
+  BucketCleanupFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EmptyArtifactBucket
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                Resource: !GetAtt ArtifactBucket.Arn
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+
+  BucketCleanupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 300
+      MemorySize: 128
+      Role: !GetAtt BucketCleanupFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import urllib.request
+          import boto3
+
+          def send_response(event, context, status, reason=None):
+              body = json.dumps({
+                  "Status": status,
+                  "Reason": reason or f"See CloudWatch Logs: {context.log_stream_name}",
+                  "PhysicalResourceId": event.get("PhysicalResourceId") or context.log_stream_name,
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "Data": {},
+              }).encode("utf-8")
+              req = urllib.request.Request(url=event["ResponseURL"], data=body, method="PUT")
+              req.add_header("Content-Type", "")
+              req.add_header("Content-Length", str(len(body)))
+              urllib.request.urlopen(req)
+
+          def handler(event, context):
+              try:
+                  if event["RequestType"] == "Delete":
+                      bucket_name = event["ResourceProperties"]["BucketName"]
+                      s3 = boto3.resource("s3")
+                      s3.Bucket(bucket_name).object_versions.all().delete()
+                  send_response(event, context, "SUCCESS")
+              except Exception as e:
+                  send_response(event, context, "FAILED", str(e))
+
+  EmptyBucketOnStackDelete:
+    Type: Custom::S3BucketCleanup
+    Properties:
+      ServiceToken: !GetAtt BucketCleanupFunction.Arn
+      BucketName: !Ref ArtifactBucket
+
+  # ---------------------------------------------------------------------
+  # Security groups
+  # ---------------------------------------------------------------------
+  EBInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Elastic Beanstalk single-instance environment - public HTTP
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS Postgres - only reachable from the EB instance SG
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref EBInstanceSecurityGroup
+
+  # ---------------------------------------------------------------------
+  # RDS Postgres
+  # ---------------------------------------------------------------------
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets for the lab RDS instance
+      SubnetIds: !Ref SubnetIds
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Engine: postgres
+      # EngineVersion intentionally omitted - lets RDS pick the current
+      # default so the template doesn't rot when AWS deprecates a pinned version.
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: "20"
+      StorageType: gp3
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBMasterUsername
+      MasterUserPassword: !Ref DBMasterPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      PubliclyAccessible: false
+      MultiAZ: false
+      DeletionProtection: false
+      BackupRetentionPeriod: 0
+
+  # ---------------------------------------------------------------------
+  # IAM: Elastic Beanstalk service role + EC2 instance role
+  # ---------------------------------------------------------------------
+  EBServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: elasticbeanstalk.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: elasticbeanstalk
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy
+
+  EBInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier
+
+  EBInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EBInstanceRole
+
+  # ---------------------------------------------------------------------
+  # IAM: GitHub Actions OIDC -> deploy role (no long-lived AWS keys in GitHub)
+  # ---------------------------------------------------------------------
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  GitHubActionsDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-github-actions-deploy"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateOIDCProvider
+                - !Ref GitHubOIDCProvider
+                - !Ref ExistingOIDCProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:ref:refs/heads/${GitHubBranch}"
+      Policies:
+        - PolicyName: DeployToElasticBeanstalk
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt ArtifactBucket.Arn
+              - Effect: Allow
+                Action:
+                  - elasticbeanstalk:CreateApplicationVersion
+                  - elasticbeanstalk:UpdateEnvironment
+                  - elasticbeanstalk:DescribeEnvironments
+                  - elasticbeanstalk:DescribeApplicationVersions
+                  - elasticbeanstalk:DescribeEvents
+                Resource: "*"
+
+  # ---------------------------------------------------------------------
+  # Elastic Beanstalk application + environment
+  # ---------------------------------------------------------------------
+  EBApplication:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      ApplicationName: !Ref AppName
+      Description: Python demo app - deployed by GitHub Actions after this stack exists.
+
+  # No VersionLabel is set here on purpose: EB deploys its built-in sample
+  # app so the environment comes up green immediately. The first GitHub
+  # Actions run then creates the real application version from S3 and
+  # updates the environment to it - that is the "initial deploy from S3"
+  # step, just driven by CI instead of a manual upload.
+  EBEnvironment:
+    Type: AWS::ElasticBeanstalk::Environment
+    Properties:
+      ApplicationName: !Ref EBApplication
+      EnvironmentName: !Ref EnvironmentName
+      SolutionStackName: !Ref SolutionStackName
+      Tier:
+        Name: WebServer
+        Type: Standard
+      OptionSettings:
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: IamInstanceProfile
+          Value: !Ref EBInstanceProfile
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: SecurityGroups
+          Value: !Ref EBInstanceSecurityGroup
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: InstanceType
+          Value: t3.micro
+        - Namespace: aws:ec2:vpc
+          OptionName: VPCId
+          Value: !Ref VpcId
+        - Namespace: aws:ec2:vpc
+          OptionName: Subnets
+          Value: !Join [",", !Ref SubnetIds]
+        - Namespace: aws:ec2:vpc
+          OptionName: AssociatePublicIpAddress
+          Value: "true"
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: EnvironmentType
+          Value: SingleInstance
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: ServiceRole
+          Value: !Ref EBServiceRole
+        - Namespace: aws:elasticbeanstalk:healthreporting:system
+          OptionName: SystemType
+          Value: enhanced
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: DB_HOST
+          Value: !GetAtt RDSInstance.Endpoint.Address
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: DB_PORT
+          Value: !GetAtt RDSInstance.Endpoint.Port
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: DB_NAME
+          Value: !Ref DBName
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: DB_USER
+          Value: !Ref DBMasterUsername
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: DB_PASSWORD
+          Value: !Ref DBMasterPassword
+
+Outputs:
+  EnvironmentURL:
+    Description: Public Elastic Beanstalk URL
+    Value: !Sub "http://${EBEnvironment.EndpointURL}"
+
+  ArtifactBucketName:
+    Description: S3 bucket GitHub Actions uploads source bundles to
+    Value: !Ref ArtifactBucket
+
+  EBApplicationName:
+    Value: !Ref EBApplication
+
+  EBEnvironmentName:
+    Value: !Ref EnvironmentName
+
+  GitHubActionsRoleArn:
+    Description: Role ARN GitHub Actions assumes via OIDC (no static keys needed)
+    Value: !GetAtt GitHubActionsDeployRole.Arn
+
+  RDSEndpointAddress:
+    Value: !GetAtt RDSInstance.Endpoint.Address
+
+  RDSEndpointPort:
+    Value: !GetAtt RDSInstance.Endpoint.Port
+
+  DBName:
+    Value: !Ref DBName
