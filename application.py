@@ -1,5 +1,6 @@
 import os
 
+import boto3
 import psycopg2
 from flask import Flask, jsonify
 
@@ -12,6 +13,21 @@ try:
 except FileNotFoundError:
     VERSION = "dev"
 
+_db_password = None
+
+
+def get_db_password():
+    # Fetched lazily via the instance's own IAM role, not passed as a plain
+    # EB env var - CloudFormation doesn't support ssm-secure dynamic
+    # references inside EB OptionSettings, so DB_PASSWORD_PARAM only carries
+    # the parameter name and the actual secret is resolved here at runtime.
+    global _db_password
+    if _db_password is None:
+        ssm = boto3.client("ssm", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        response = ssm.get_parameter(Name=os.environ["DB_PASSWORD_PARAM"], WithDecryption=True)
+        _db_password = response["Parameter"]["Value"]
+    return _db_password
+
 
 def get_db_connection():
     return psycopg2.connect(
@@ -19,7 +35,7 @@ def get_db_connection():
         port=int(os.environ.get("DB_PORT", "5432")),
         dbname=os.environ["DB_NAME"],
         user=os.environ["DB_USER"],
-        password=os.environ["DB_PASSWORD"],
+        password=get_db_password(),
     )
 
 
