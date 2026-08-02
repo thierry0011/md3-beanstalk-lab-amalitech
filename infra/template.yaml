@@ -400,17 +400,23 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}"
                   - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}/*"
-              # CloudFormation's own auto-managed per-account template-storage
-              # bucket (fixed "cf-templates-" prefix, random per-account hash
-              # not derivable from any pseudo-parameter) - UpdateStack on the
-              # nested awseb-e-* stack reads/writes its template body here.
+              # EB's UpdateEnvironment internally generates a nested-stack
+              # template too large for CloudFormation's inline 51,200-byte
+              # limit, so it uploads it to an S3 location of its own choosing
+              # and calls UpdateStack with a TemplateURL. Confirmed by direct
+              # testing that this role handles TemplateURL updates fine
+              # against buckets it has access to (elasticbeanstalk-* and
+              # cf-templates-* were both tried and ruled out) - the actual
+              # bucket isn't named in any error message and its GetObject/
+              # PutObject calls are S3 data events, invisible in this
+              # account's CloudTrail (management-events only). Granting
+              # broadly here rather than continuing to guess bucket names.
               - Effect: Allow
                 Action:
                   - s3:GetObject
                   - s3:PutObject
-                Resource:
-                  - "arn:aws:s3:::cf-templates-*"
-                  - "arn:aws:s3:::cf-templates-*/*"
+                  - s3:ListBucket
+                Resource: "*"
               # EB's UpdateEnvironment orchestration reads its own auto-generated
               # nested CloudFormation stack (always named "awseb-e-*", created
               # after the environment exists so its exact name can't be
