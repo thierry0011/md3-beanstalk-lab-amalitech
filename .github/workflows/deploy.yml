@@ -89,4 +89,4 @@ jobs:
           echo "Checking http://$URL/"
           RESPONSE=$(curl -sf "http://$URL/")
           echo "$RESPONSE"
-          echo "$RESPONSE" | grep -q "\"$VERSION\"" || { echo "::error::Live version does not match $VERSION"; exit 1; }
+          echo "$RESPONSE" | grep -q "$VERSION" || { echo "::error::Live version does not match $VERSION"; exit 1; }

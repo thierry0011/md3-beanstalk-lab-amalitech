@@ -2,7 +2,7 @@ import os
 
 import boto3
 import psycopg2
-from flask import Flask, jsonify
+from flask import Flask
 
 application = Flask(__name__)
 
@@ -39,13 +39,7 @@ def get_db_connection():
     )
 
 
-@application.route("/")
-def index():
-    return jsonify(status="ok", message="Deployment successful", version=VERSION)
-
-
-@application.route("/visits")
-def visits():
+def record_visit():
     conn = get_db_connection()
     try:
         with conn, conn.cursor() as cur:
@@ -60,10 +54,96 @@ def visits():
             cur.execute("INSERT INTO visits DEFAULT VALUES")
             cur.execute("SELECT COUNT(*) FROM visits")
             row = cur.fetchone()
-            count = row[0] if row else 0
-        return jsonify(status="ok", visits=count)
+            return row[0] if row else 0
     finally:
         conn.close()
+
+
+PAGE_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Beanstalk Lab App</title>
+  <style>
+    body {{
+      font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+    }}
+    .card {{
+      background: #1e293b;
+      border-radius: 12px;
+      padding: 2.5rem 3rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+      text-align: center;
+    }}
+    h1 {{
+      color: #4ade80;
+      margin: 0 0 0.5rem;
+    }}
+    p {{
+      color: #94a3b8;
+      margin: 0;
+    }}
+    .row {{
+      display: flex;
+      gap: 1.5rem;
+      margin-top: 1.5rem;
+      justify-content: center;
+    }}
+    .stat {{
+      background: #0f172a;
+      border-radius: 8px;
+      padding: 1rem 1.5rem;
+      min-width: 120px;
+    }}
+    .stat .label {{
+      font-size: 0.75rem;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }}
+    .stat .value {{
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-top: 0.25rem;
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Deployment Successful</h1>
+    <p>This Python app is running on AWS Elastic Beanstalk.</p>
+    <div class="row">
+      <div class="stat">
+        <div class="label">Version</div>
+        <div class="value">{version}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Visits</div>
+        <div class="value">{visits}</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+
+@application.route("/")
+def index():
+    return PAGE_TEMPLATE.format(version=VERSION, visits=record_visit())
+
+
+@application.route("/visits")
+def visits_json():
+    return {"status": "ok", "visits": record_visit()}
 
 
 if __name__ == "__main__":
