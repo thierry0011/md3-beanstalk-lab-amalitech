@@ -55,15 +55,7 @@ jobs:
               --description "Deployed from $GITHUB_SHA"
           fi
 
-      # Static credentials, deliberately - see README for why. EB stages the
-      # nested-stack template (>51,200 bytes, over CloudFormation's inline
-      # limit) in a cross-account bucket and hands CloudFormation a
-      # pre-signed URL; that hand-off doesn't propagate STS session tokens,
-      # so this call fails under ANY assumed-role session (OIDC included) -
-      # proven by isolating OIDC vs plain AssumeRole vs static credentials.
-      # This is the one static-credential exception in an otherwise
-      # OIDC-only pipeline, scoped to a single-purpose IAM user that can
-      # only call UpdateEnvironment on this one environment.
+      # Static credentials, deliberately - fails under any assumed-role session (OIDC included); see README for why.
       - name: Deploy new version to the environment (static creds, see comment above)
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.EB_UPDATE_ONLY_KEY_ID }}

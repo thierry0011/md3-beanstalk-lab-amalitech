@@ -17,10 +17,7 @@ _db_password = None
 
 
 def get_db_password():
-    # Fetched lazily via the instance's own IAM role, not passed as a plain
-    # EB env var - CloudFormation doesn't support ssm-secure dynamic
-    # references inside EB OptionSettings, so DB_PASSWORD_PARAM only carries
-    # the parameter name and the actual secret is resolved here at runtime.
+    # Resolved here at runtime via the instance's own IAM role, not passed as a plain EB env var.
     global _db_password
     if _db_password is None:
         ssm = boto3.client("ssm", region_name=os.environ.get("AWS_REGION", "us-east-1"))

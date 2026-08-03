@@ -120,9 +120,7 @@ Conditions:
 
 Resources:
 
-  # ---------------------------------------------------------------------
   # S3 artifact bucket - holds the zips GitHub Actions uploads
-  # ---------------------------------------------------------------------
   ArtifactBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Delete
@@ -144,10 +142,7 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
 
-  # CloudFormation refuses to delete a non-empty bucket, and versioning means
-  # "empty" includes every version + delete marker. This custom resource runs
-  # on stack DELETE only, purges the bucket, then lets ArtifactBucket delete
-  # cleanly - so `delete-stack` really does remove everything in one shot.
+  # Empties ArtifactBucket on stack delete so delete-stack doesn't fail on a non-empty (versioned) bucket.
   BucketCleanupFunctionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -227,9 +222,7 @@ Resources:
       ServiceToken: !GetAtt BucketCleanupFunction.Arn
       BucketName: !Ref ArtifactBucket
 
-  # ---------------------------------------------------------------------
   # Security groups
-  # ---------------------------------------------------------------------
   EBInstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -252,9 +245,7 @@ Resources:
           ToPort: 5432
           SourceSecurityGroupId: !Ref EBInstanceSecurityGroup
 
-  # ---------------------------------------------------------------------
   # RDS Postgres
-  # ---------------------------------------------------------------------
   DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
@@ -269,17 +260,13 @@ Resources:
     Properties:
       DBInstanceIdentifier: !Sub "${AppName}-db"
       Engine: postgres
-      # EngineVersion intentionally omitted - lets RDS pick the current
-      # default so the template doesn't rot when AWS deprecates a pinned version.
+      # EngineVersion omitted so RDS uses its current default, avoiding template rot.
       DBInstanceClass: db.t3.micro
       AllocatedStorage: "20"
       StorageType: gp3
       DBName: !Ref DBName
       MasterUsername: !Ref DBMasterUsername
-      # Pulled from SSM Parameter Store at deploy time, never a CFN parameter -
-      # a Git-sync deployment file commits its parameters as plaintext to the
-      # repo, so the password can never be one. Create this once, out of band:
-      # aws ssm put-parameter --name "/${AppName}/db-master-password" --type SecureString --value "..."
+      # Pulled from SSM at deploy time - Git Sync commits parameters as plaintext, so this can't be a CFN parameter.
       MasterUserPassword: !Sub "{{resolve:ssm-secure:/${AppName}/db-master-password}}"
       DBSubnetGroupName: !Ref DBSubnetGroup
       VPCSecurityGroups:
@@ -289,9 +276,7 @@ Resources:
       DeletionProtection: false
       BackupRetentionPeriod: 0
 
-  # ---------------------------------------------------------------------
   # IAM: Elastic Beanstalk service role + EC2 instance role
-  # ---------------------------------------------------------------------
   EBServiceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -339,9 +324,7 @@ Resources:
       Roles:
         - !Ref EBInstanceRole
 
-  # ---------------------------------------------------------------------
   # IAM: GitHub Actions OIDC -> deploy role (no long-lived AWS keys in GitHub)
-  # ---------------------------------------------------------------------
   GitHubOIDCProvider:
     Type: AWS::IAM::OIDCProvider
     Condition: ShouldCreateOIDCProvider
@@ -369,10 +352,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                # Exact match on GitHub's immutable-ID subject format
-                # (repo:org@ownerId/repo@repoId:ref:...) - pins trust to this
-                # specific repo's permanent identity, not its renamable name,
-                # and with no wildcard there's nothing for a lookalike name to match.
+                # Matches GitHub's immutable-ID subject format - pins trust to the repo's permanent identity, not its renamable name.
                 token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}@${GitHubOwnerId}/${GitHubRepo}@${GitHubRepoId}:ref:refs/heads/${GitHubBranch}"
       Policies:
         - PolicyName: DeployToElasticBeanstalk
@@ -388,14 +368,8 @@ Resources:
                 Action:
                   - s3:ListBucket
                 Resource: !GetAtt ArtifactBucket.Arn
-              # UpdateEnvironment deliberately NOT granted here - see
-              # EBUpdateOnlyUser below. EB's mechanism for staging large
-              # (>51,200 byte) nested-stack templates via a cross-account
-              # presigned URL doesn't propagate STS session tokens, so it
-              # fails for ANY assumed-role session (OIDC or otherwise),
-              # proven by isolating OIDC vs plain AssumeRole vs static
-              # credentials - only long-lived keys succeed. This role stays
-              # on OIDC for everything that actually works under it.
+              # UpdateEnvironment intentionally not granted here - fails under any assumed-role session (see README); the
+              # workaround lives in infra/persistent-identity.yaml as a separate, narrowly-scoped static-credential user.
               - Effect: Allow
                 Action:
                   - elasticbeanstalk:CreateApplicationVersion
@@ -404,100 +378,15 @@ Resources:
                   - elasticbeanstalk:DescribeEvents
                 Resource: "*"
 
-  # ---------------------------------------------------------------------
-  # IAM: narrow static-key user, used ONLY for the update-environment call.
-  # Its access key is created manually via CLI after stack creation (same
-  # pattern as the SSM db-master-password) rather than via AWS::IAM::AccessKey
-  # + a stack Output - CloudFormation Outputs don't support NoEcho, so the
-  # secret would otherwise sit in plaintext in describe-stacks for the
-  # stack's whole lifetime.
-  # ---------------------------------------------------------------------
-  EBUpdateOnlyUser:
-    Type: AWS::IAM::User
-    Properties:
-      UserName: !Sub "${AppName}-update-only"
-      Policies:
-        - PolicyName: UpdateEnvironmentOnly
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action: elasticbeanstalk:UpdateEnvironment
-                Resource: !Sub "arn:aws:elasticbeanstalk:${AWS::Region}:${AWS::AccountId}:environment/${AppName}/${EnvironmentName}"
-              - Effect: Allow
-                Action:
-                  - elasticbeanstalk:DescribeEnvironments
-                  - elasticbeanstalk:DescribeEvents
-                Resource: "*"
-              # Everything below is the same downstream chain EB's own
-              # UpdateEnvironment orchestration needs regardless of which
-              # principal calls it - proven empirically, not guessed (see
-              # the statements this mirrors, previously on GitHubActionsDeployRole).
-              - Effect: Allow
-                Action: s3:*
-                Resource:
-                  - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}"
-                  - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}/*"
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:ListBucket
-                Resource: "*"
-              - Effect: Allow
-                Action:
-                  - cloudformation:GetTemplate
-                  - cloudformation:DescribeStacks
-                  - cloudformation:DescribeStackResource
-                  - cloudformation:DescribeStackResources
-                  - cloudformation:DescribeStackEvents
-                  - cloudformation:UpdateStack
-                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/awseb-e-*/*"
-              - Effect: Allow
-                Action: autoscaling:*
-                Resource: "*"
-              - Effect: Allow
-                Action:
-                  - ec2:CreateLaunchTemplate
-                  - ec2:CreateLaunchTemplateVersion
-                  - ec2:ModifyLaunchTemplate
-                  - ec2:DescribeLaunchTemplates
-                  - ec2:DescribeLaunchTemplateVersions
-                  - ec2:DeleteLaunchTemplateVersions
-                  - ec2:CreateTags
-                  - ec2:DescribeInstanceTypes
-                  - ec2:DescribeInstanceStatus
-                  - ec2:DescribeVpcs
-                  - ec2:DescribeSubnets
-                  - ec2:DescribeSecurityGroups
-                  - ec2:DescribeAvailabilityZones
-                  - ec2:DescribeAccountAttributes
-                  - ec2:DescribeImages
-                  - ec2:DescribeKeyPairs
-                  - ec2:DescribeInstances
-                  - ec2:DescribeAddresses
-                Resource: "*"
-              - Effect: Allow
-                Action:
-                  - cloudwatch:PutMetricAlarm
-                  - cloudwatch:DescribeAlarms
-                  - cloudwatch:DeleteAlarms
-                Resource: "*"
-
-  # ---------------------------------------------------------------------
   # Elastic Beanstalk application + environment
-  # ---------------------------------------------------------------------
   EBApplication:
     Type: AWS::ElasticBeanstalk::Application
     Properties:
       ApplicationName: !Ref AppName
       Description: Python demo app - deployed by GitHub Actions after this stack exists.
 
-  # No VersionLabel is set here on purpose: EB deploys its built-in sample
-  # app so the environment comes up green immediately. The first GitHub
-  # Actions run then creates the real application version from S3 and
-  # updates the environment to it - that is the "initial deploy from S3"
-  # step, just driven by CI instead of a manual upload.
+  # No VersionLabel: EB deploys its sample app so the environment comes up green immediately; the first
+  # GitHub Actions run then creates the real application version and updates the environment to it.
   EBEnvironment:
     Type: AWS::ElasticBeanstalk::Environment
     Properties:
@@ -548,10 +437,8 @@ Resources:
           OptionName: DB_USER
           Value: !Ref DBMasterUsername
         - Namespace: aws:elasticbeanstalk:application:environment
-          # CloudFormation doesn't support ssm-secure dynamic references inside
-          # EB OptionSettings (unlike RDS's MasterUserPassword above, which does
-          # support it) - so the instance fetches the actual secret itself at
-          # runtime via its own IAM role, using this parameter name as a pointer.
+          # ssm-secure dynamic refs aren't supported in EB OptionSettings, so this carries only the parameter
+          # name - the instance resolves the actual secret itself at runtime via its own IAM role.
           OptionName: DB_PASSWORD_PARAM
           Value: !Sub "/${AppName}/db-master-password"
 
@@ -573,14 +460,6 @@ Outputs:
   GitHubActionsRoleArn:
     Description: Role ARN GitHub Actions assumes via OIDC (no static keys needed)
     Value: !GetAtt GitHubActionsDeployRole.Arn
-
-  EBUpdateOnlyUserName:
-    Description: >
-      Run `aws iam create-access-key --user-name <this>` once after stack
-      creation, then put the resulting AccessKeyId/SecretAccessKey into
-      GitHub secrets EB_UPDATE_ONLY_KEY_ID / EB_UPDATE_ONLY_SECRET. Never
-      output here - CFN Outputs don't support NoEcho.
-    Value: !Ref EBUpdateOnlyUser
 
   RDSEndpointAddress:
     Value: !GetAtt RDSInstance.Endpoint.Address

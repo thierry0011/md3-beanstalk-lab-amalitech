@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Persistent identity for the Elastic Beanstalk lab's CI/CD pipeline - the
+  single-purpose UpdateEnvironment user (see README). Deploy once, keep
+  forever; not part of the ephemeral demo stack (template.yaml).
+
+Parameters:
+  AppName:
+    Type: String
+    Default: beanstalk-lab-app
+    Description: Must match the AppName parameter used in template.yaml - this policy's resource ARN is built from it.
+
+  EnvironmentName:
+    Type: String
+    Default: beanstalk-lab-env
+    Description: Must match the EnvironmentName parameter used in template.yaml.
+
+Resources:
+  EBUpdateOnlyUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "${AppName}-update-only"
+      Policies:
+        - PolicyName: UpdateEnvironmentOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: elasticbeanstalk:UpdateEnvironment
+                Resource: !Sub "arn:aws:elasticbeanstalk:${AWS::Region}:${AWS::AccountId}:environment/${AppName}/${EnvironmentName}"
+              - Effect: Allow
+                Action:
+                  - elasticbeanstalk:DescribeEnvironments
+                  - elasticbeanstalk:DescribeEvents
+                Resource: "*"
+              # Downstream chain EB's UpdateEnvironment orchestration needs regardless of which principal calls it.
+              - Effect: Allow
+                Action: s3:*
+                Resource:
+                  - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudformation:GetTemplate
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:UpdateStack
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/awseb-e-*/*"
+              - Effect: Allow
+                Action: autoscaling:*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ec2:CreateLaunchTemplate
+                  - ec2:CreateLaunchTemplateVersion
+                  - ec2:ModifyLaunchTemplate
+                  - ec2:DescribeLaunchTemplates
+                  - ec2:DescribeLaunchTemplateVersions
+                  - ec2:DeleteLaunchTemplateVersions
+                  - ec2:CreateTags
+                  - ec2:DescribeInstanceTypes
+                  - ec2:DescribeInstanceStatus
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeAvailabilityZones
+                  - ec2:DescribeAccountAttributes
+                  - ec2:DescribeImages
+                  - ec2:DescribeKeyPairs
+                  - ec2:DescribeInstances
+                  - ec2:DescribeAddresses
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:DeleteAlarms
+                Resource: "*"
+
+Outputs:
+  UserName:
+    Description: Run `aws iam create-access-key --user-name <this>` once, then store the keys in GitHub secrets.
+    Value: !Ref EBUpdateOnlyUser
