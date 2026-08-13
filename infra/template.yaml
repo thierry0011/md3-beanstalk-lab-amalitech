@@ -355,6 +355,10 @@ Resources:
               StringEquals:
                 sts:ExternalId: elasticbeanstalk
       ManagedPolicyArns:
+        # Base service-role policy - grants the core S3/CloudFormation/EC2/ASG permissions EB itself
+        # needs to orchestrate environment updates. Without it, EB's own service role (not the caller)
+        # hits Access Denied doing its internal S3/CFN work, independent of any caller credential type.
+        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkService
         - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
         - arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy
 
