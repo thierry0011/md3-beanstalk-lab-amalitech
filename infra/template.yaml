@@ -360,6 +360,11 @@ Resources:
         # hits Access Denied doing its internal S3/CFN work, independent of any caller credential type.
         - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkService
         - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
+        # TEMPORARY DIAGNOSTIC - remove once we know whether "S3 error: Access Denied" during
+        # environment updates is an IAM gap or something else (session-token/SCP/bucket policy).
+        # If this makes the error go away, scope it down to the exact actions/resources needed.
+        # If it does NOT go away, IAM permissions are ruled out entirely - remove this immediately.
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
         - arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy
 
   EBInstanceRole:
