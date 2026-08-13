@@ -108,15 +108,35 @@ jobs:
           echo "::error::update-environment did not succeed after 6 attempts"
           exit 1
 
-      # Deliberately no ephemeral-key override here - DescribeEnvironments (all this waiter calls)
-      # is already covered by the OIDC role from the "Configure AWS credentials" step, so this
-      # runs on that stable session instead of depending on the ephemeral key's lifecycle across
-      # however many polls the update takes.
+      # Deliberately no ephemeral-key override here - DescribeEnvironments (all this loop calls) is
+      # already covered by the OIDC role from the "Configure AWS credentials" step.
+      #
+      # Not using `aws elasticbeanstalk wait environment-updated` here - that waiter only checks
+      # Status/Health, and update-environment returns before EB's status has actually flipped away
+      # from the previous "Ready". If the waiter's first poll lands on that stale pre-update state,
+      # it reports success immediately, before anything has actually deployed (this is what was
+      # letting the pipeline "succeed" while the live site kept serving the old version). Polling
+      # until VersionLabel itself matches $VERSION closes that gap, and logs each poll so a stuck
+      # or failed rollout is visible in the run output instead of a silent timeout.
       - name: Wait for the environment to finish updating
         run: |
-          aws elasticbeanstalk wait environment-updated \
-            --application-name "${{ vars.EB_APPLICATION_NAME }}" \
-            --environment-names "${{ vars.EB_ENVIRONMENT_NAME }}"
+          for i in $(seq 1 40); do
+            read -r ENV_STATUS ENV_VERSION ENV_HEALTH <<< "$(aws elasticbeanstalk describe-environments \
+              --environment-names "${{ vars.EB_ENVIRONMENT_NAME }}" \
+              --query "Environments[0].[Status,VersionLabel,Health]" --output text)"
+            echo "poll $i: Status=$ENV_STATUS Version=$ENV_VERSION Health=$ENV_HEALTH"
+            if [ "$ENV_STATUS" = "Ready" ] && [ "$ENV_VERSION" = "$VERSION" ]; then
+              if [ "$ENV_HEALTH" = "Red" ]; then
+                echo "::error::Environment reached version $VERSION but Health is Red"
+                exit 1
+              fi
+              echo "Environment is on version $VERSION and Ready."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::Timed out waiting for environment to reach Ready on version $VERSION"
+          exit 1
 
       - name: Delete the ephemeral access key
         if: always()
