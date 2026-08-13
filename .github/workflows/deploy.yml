@@ -76,6 +76,15 @@ jobs:
           echo "UPDATE_KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
           echo "UPDATE_KEY_SECRET=$KEY_SECRET" >> "$GITHUB_ENV"
 
+      # A brand-new access key is usable for direct EB/CFN API calls (update-environment,
+      # describe-*) within ~15s, but EB's internal, asynchronous CloudFormation UpdateStack -
+      # fired seconds after update-environment returns - reads its template from S3 under this
+      # same key, and that path propagates slower. Both real failures we saw ("S3 error: Access
+      # Denied" from CloudFormation) hit at ~20s post-creation; this wait puts the whole update
+      # past that window before it starts.
+      - name: Wait for the ephemeral key to propagate
+        run: sleep 30
+
       # The key must stay alive for the WHOLE update, not just this call - update-environment returns as
       # soon as EB accepts the request, but the actual S3/CloudFormation orchestration behind it (the
       # presigned-URL hand-off from the README) runs asynchronously afterward, still under this identity.
