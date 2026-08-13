@@ -108,11 +108,11 @@ jobs:
           echo "::error::update-environment did not succeed after 6 attempts"
           exit 1
 
+      # Deliberately no ephemeral-key override here - DescribeEnvironments (all this waiter calls)
+      # is already covered by the OIDC role from the "Configure AWS credentials" step, so this
+      # runs on that stable session instead of depending on the ephemeral key's lifecycle across
+      # however many polls the update takes.
       - name: Wait for the environment to finish updating
-        env:
-          AWS_ACCESS_KEY_ID: ${{ env.UPDATE_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ env.UPDATE_KEY_SECRET }}
-          AWS_SESSION_TOKEN: ""
         run: |
           aws elasticbeanstalk wait environment-updated \
             --application-name "${{ vars.EB_APPLICATION_NAME }}" \
