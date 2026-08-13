@@ -76,7 +76,11 @@ jobs:
           echo "UPDATE_KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
           echo "UPDATE_KEY_SECRET=$KEY_SECRET" >> "$GITHUB_ENV"
 
-      - name: Deploy new version to the environment (ephemeral key, deleted immediately after)
+      # The key must stay alive for the WHOLE update, not just this call - update-environment returns as
+      # soon as EB accepts the request, but the actual S3/CloudFormation orchestration behind it (the
+      # presigned-URL hand-off from the README) runs asynchronously afterward, still under this identity.
+      # Deleting the key right after this step (as we used to) pulled it out from under that async work.
+      - name: Deploy new version to the environment (ephemeral key, kept alive until the update finishes)
         env:
           AWS_ACCESS_KEY_ID: ${{ env.UPDATE_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ env.UPDATE_KEY_SECRET }}
@@ -95,18 +99,22 @@ jobs:
           echo "::error::update-environment did not succeed after 6 attempts"
           exit 1
 
+      - name: Wait for the environment to finish updating
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.UPDATE_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.UPDATE_KEY_SECRET }}
+          AWS_SESSION_TOKEN: ""
+        run: |
+          aws elasticbeanstalk wait environment-updated \
+            --application-name "${{ vars.EB_APPLICATION_NAME }}" \
+            --environment-names "${{ vars.EB_ENVIRONMENT_NAME }}"
+
       - name: Delete the ephemeral access key
         if: always()
         run: |
           if [ -n "$UPDATE_KEY_ID" ]; then
             aws iam delete-access-key --user-name "${{ vars.EB_UPDATE_ONLY_USER_NAME }}" --access-key-id "$UPDATE_KEY_ID"
           fi
-
-      - name: Wait for the environment to finish updating
-        run: |
-          aws elasticbeanstalk wait environment-updated \
-            --application-name "${{ vars.EB_APPLICATION_NAME }}" \
-            --environment-names "${{ vars.EB_ENVIRONMENT_NAME }}"
 
       - name: Verify the deployed version responds
         run: |
