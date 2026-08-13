@@ -9,11 +9,6 @@ Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label:
-          default: Networking (pick your default VPC)
-        Parameters:
-          - VpcId
-          - SubnetIds
-      - Label:
           default: Elastic Beanstalk
         Parameters:
           - AppName
@@ -45,17 +40,6 @@ Parameters:
     Type: String
     Default: beanstalk-lab-env
     Description: Elastic Beanstalk environment name.
-
-  VpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: VPC to deploy into (your account's default VPC is fine).
-
-  SubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-    Description: >
-      At least 2 PUBLIC subnets from the VPC above, in different AZs
-      (needed for the RDS subnet group even though RDS itself stays private).
-      The default VPC's subnets qualify.
 
   SolutionStackName:
     Type: String
@@ -119,6 +103,83 @@ Conditions:
   ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, "true"]
 
 Resources:
+
+  # Self-contained networking - owned by this stack so create/rollback/delete always leaves a
+  # consistent, working network behind instead of depending on some pre-existing VPC's state.
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-vpc"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-igw"
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-public-rt"
+
+  # DependsOn is required here - AWS rejects a route to an IGW that CloudFormation hasn't
+  # finished attaching yet, and a bare !Ref doesn't imply that ordering on its own.
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-public-a"
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-public-b"
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
 
   # S3 artifact bucket - holds the zips GitHub Actions uploads
   ArtifactBucket:
@@ -227,7 +288,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Elastic Beanstalk single-instance environment - public HTTP
-      VpcId: !Ref VpcId
+      VpcId: !Ref Vpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
@@ -238,7 +299,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: RDS Postgres - only reachable from the EB instance SG
-      VpcId: !Ref VpcId
+      VpcId: !Ref Vpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 5432
@@ -251,7 +312,9 @@ Resources:
     Properties:
       DBSubnetGroupName: !Sub "${AppName}-db-subnet-group"
       DBSubnetGroupDescription: Subnets for the lab RDS instance
-      SubnetIds: !Ref SubnetIds
+      SubnetIds:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
 
   RDSInstance:
     Type: AWS::RDS::DBInstance
@@ -398,6 +461,12 @@ Resources:
   # GitHub Actions run then creates the real application version and updates the environment to it.
   EBEnvironment:
     Type: AWS::ElasticBeanstalk::Environment
+    # Waits for the full networking chain (subnets actually associated with a route table that
+    # has a working IGW route), not just the subnets existing - otherwise EB can start launching
+    # the instance before there's anywhere for it to route to, and hit the exact same failure.
+    DependsOn:
+      - PublicSubnetARouteTableAssociation
+      - PublicSubnetBRouteTableAssociation
     Properties:
       ApplicationName: !Ref EBApplication
       EnvironmentName: !Ref EnvironmentName
@@ -417,10 +486,10 @@ Resources:
           Value: t3.micro
         - Namespace: aws:ec2:vpc
           OptionName: VPCId
-          Value: !Ref VpcId
+          Value: !Ref Vpc
         - Namespace: aws:ec2:vpc
           OptionName: Subnets
-          Value: !Join [",", !Ref SubnetIds]
+          Value: !Join [",", [!Ref PublicSubnetA, !Ref PublicSubnetB]]
         - Namespace: aws:ec2:vpc
           OptionName: AssociatePublicIpAddress
           Value: "true"

@@ -1,8 +1,6 @@
 {
   "template-file-path": "infra/template.yaml",
   "parameters": {
-    "VpcId": "vpc-0ffd6e4b615c82b78",
-    "SubnetIds": "subnet-01520499c7c99f415,subnet-019274758db017ae8",
     "GitHubOrg": "thierry0011",
     "GitHubRepo": "md3-beanstalk-lab-amalitech",
     "GitHubOwnerId": "210671159",
