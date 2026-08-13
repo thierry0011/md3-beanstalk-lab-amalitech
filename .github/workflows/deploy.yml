@@ -55,17 +55,52 @@ jobs:
               --description "Deployed from $GITHUB_SHA"
           fi
 
-      # Static credentials, deliberately - fails under any assumed-role session (OIDC included); see README for why.
-      - name: Deploy new version to the environment (static creds, see comment above)
+      # UpdateEnvironment fails under any assumed-role session (OIDC included) - see README. Instead of a
+      # standing static credential, mint a fresh access key for the narrowly-scoped update-only user, use it
+      # once, then delete it. No long-lived secret exists in GitHub at any point.
+      - name: Clean up any stale ephemeral access keys
+        run: |
+          USER="${{ vars.EB_UPDATE_ONLY_USER_NAME }}"
+          EXISTING=$(aws iam list-access-keys --user-name "$USER" --query "AccessKeyMetadata[].AccessKeyId" --output text)
+          for KEY_ID in $EXISTING; do
+            echo "Deleting stale access key $KEY_ID left over from a previous run"
+            aws iam delete-access-key --user-name "$USER" --access-key-id "$KEY_ID"
+          done
+
+      - name: Create ephemeral access key for the update-only user
+        run: |
+          USER="${{ vars.EB_UPDATE_ONLY_USER_NAME }}"
+          read -r KEY_ID KEY_SECRET <<< "$(aws iam create-access-key --user-name "$USER" --query "AccessKey.[AccessKeyId,SecretAccessKey]" --output text)"
+          echo "::add-mask::$KEY_ID"
+          echo "::add-mask::$KEY_SECRET"
+          echo "UPDATE_KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
+          echo "UPDATE_KEY_SECRET=$KEY_SECRET" >> "$GITHUB_ENV"
+
+      - name: Deploy new version to the environment (ephemeral key, deleted immediately after)
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.EB_UPDATE_ONLY_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.EB_UPDATE_ONLY_SECRET }}
+          AWS_ACCESS_KEY_ID: ${{ env.UPDATE_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.UPDATE_KEY_SECRET }}
           AWS_SESSION_TOKEN: ""
         run: |
-          aws elasticbeanstalk update-environment \
-            --region "${{ vars.AWS_REGION }}" \
-            --environment-name "${{ vars.EB_ENVIRONMENT_NAME }}" \
-            --version-label "$VERSION"
+          for ATTEMPT in 1 2 3 4 5 6; do
+            if aws elasticbeanstalk update-environment \
+              --region "${{ vars.AWS_REGION }}" \
+              --environment-name "${{ vars.EB_ENVIRONMENT_NAME }}" \
+              --version-label "$VERSION"; then
+              exit 0
+            fi
+            echo "update-environment failed (attempt $ATTEMPT/6) - the key may not have propagated yet, retrying in 5s"
+            sleep 5
+          done
+          echo "::error::update-environment did not succeed after 6 attempts"
+          exit 1
+
+      - name: Delete the ephemeral access key
+        if: always()
+        run: |
+          if [ -n "$UPDATE_KEY_ID" ]; then
+            aws iam delete-access-key --user-name "${{ vars.EB_UPDATE_ONLY_USER_NAME }}" --access-key-id "$UPDATE_KEY_ID"
+          fi
 
       - name: Wait for the environment to finish updating
         run: |

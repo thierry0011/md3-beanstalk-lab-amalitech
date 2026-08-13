@@ -87,5 +87,8 @@ Resources:
 
 Outputs:
   UserName:
-    Description: Run `aws iam create-access-key --user-name <this>` once, then store the keys in GitHub secrets.
+    Description: >
+      No manual access key setup needed. GitHubActionsDeployRole (template.yaml) is granted
+      iam:CreateAccessKey/DeleteAccessKey/ListAccessKeys scoped to exactly this user's ARN, and
+      mints + destroys a fresh key inside every deploy job. Nothing is stored in GitHub.
     Value: !Ref EBUpdateOnlyUser

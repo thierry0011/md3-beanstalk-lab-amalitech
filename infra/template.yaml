@@ -361,15 +361,13 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - s3:PutObject
+                  - s3:*
                   - s3:GetObject
                 Resource: !Sub "${ArtifactBucket.Arn}/*"
               - Effect: Allow
                 Action:
                   - s3:ListBucket
                 Resource: !GetAtt ArtifactBucket.Arn
-              # UpdateEnvironment intentionally not granted here - fails under any assumed-role session (see README); the
-              # workaround lives in infra/persistent-identity.yaml as a separate, narrowly-scoped static-credential user.
               - Effect: Allow
                 Action:
                   - elasticbeanstalk:CreateApplicationVersion
@@ -377,6 +375,17 @@ Resources:
                   - elasticbeanstalk:DescribeApplicationVersions
                   - elasticbeanstalk:DescribeEvents
                 Resource: "*"
+              # UpdateEnvironment itself still can't be granted here - it fails under any assumed-role session,
+              # OIDC included (see README). Rather than a standing static credential, this role is allowed to
+              # mint/list/delete access keys for exactly one narrowly-scoped IAM user (infra/persistent-identity.yaml).
+              # The deploy job creates a fresh key, uses it once for UpdateEnvironment, and deletes it before the
+              # job ends - no long-lived secret exists in GitHub at any point.
+              - Effect: Allow
+                Action:
+                  - iam:CreateAccessKey
+                  - iam:DeleteAccessKey
+                  - iam:ListAccessKeys
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:user/${AppName}-update-only"
 
   # Elastic Beanstalk application + environment
   EBApplication:
