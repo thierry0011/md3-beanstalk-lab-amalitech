@@ -38,9 +38,12 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}"
                   - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}/*"
+              # ArtifactBucket has versioning enabled, so EB pins the source bundle to a
+              # specific object version when deploying - GetObjectVersion is required too.
               - Effect: Allow
                 Action:
                   - s3:GetObject
+                  - s3:GetObjectVersion
                   - s3:PutObject
                   - s3:ListBucket
                 Resource: "*"

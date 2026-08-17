@@ -356,6 +356,22 @@ Resources:
         - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkService
         - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
         - arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy
+      Policies:
+        # ArtifactBucket has versioning enabled, so EB pins the source bundle to a
+        # specific object version when deploying - that needs GetObjectVersion, which
+        # none of the managed policies above grant on a non-elasticbeanstalk-* bucket.
+        - PolicyName: ReadVersionedArtifactBundle
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt ArtifactBucket.Arn
 
   EBInstanceRole:
     Type: AWS::IAM::Role
