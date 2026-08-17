@@ -104,8 +104,7 @@ Conditions:
 
 Resources:
 
-  # Self-contained networking - owned by this stack so create/rollback/delete always leaves a
-  # consistent, working network behind instead of depending on some pre-existing VPC's state.
+  # own networking so create/delete never depends on some pre-existing VPC
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -137,8 +136,7 @@ Resources:
         - Key: Name
           Value: !Sub "${AppName}-public-rt"
 
-  # DependsOn is required here - AWS rejects a route to an IGW that CloudFormation hasn't
-  # finished attaching yet, and a bare !Ref doesn't imply that ordering on its own.
+  # needs the IGW actually attached first, !Ref alone won't order it
   PublicRoute:
     Type: AWS::EC2::Route
     DependsOn: VpcGatewayAttachment
@@ -181,15 +179,13 @@ Resources:
       SubnetId: !Ref PublicSubnetB
       RouteTableId: !Ref PublicRouteTable
 
-  # S3 artifact bucket - holds the zips GitHub Actions uploads
+  # holds the app zips GitHub Actions uploads
   ArtifactBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
-      # Fixed, deterministic name (not auto-generated) so it's identical
-      # across every delete/recreate cycle - GitHub Actions variables never
-      # need to be touched again after the first stack creation.
+      # fixed name so recreating the stack doesn't mean updating GitHub Actions vars again
       BucketName: !Sub "${AppName}-artifacts-${AWS::AccountId}"
       VersioningConfiguration:
         Status: Enabled
@@ -203,7 +199,7 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
 
-  # Empties ArtifactBucket on stack delete so delete-stack doesn't fail on a non-empty (versioned) bucket.
+  # empties the bucket on delete - delete-stack fails on a non-empty versioned bucket otherwise
   BucketCleanupFunctionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -323,13 +319,13 @@ Resources:
     Properties:
       DBInstanceIdentifier: !Sub "${AppName}-db"
       Engine: postgres
-      # EngineVersion omitted so RDS uses its current default, avoiding template rot.
+      # no EngineVersion pinned - let RDS pick its current default
       DBInstanceClass: db.t3.micro
       AllocatedStorage: "20"
       StorageType: gp3
       DBName: !Ref DBName
       MasterUsername: !Ref DBMasterUsername
-      # Pulled from SSM at deploy time - Git Sync commits parameters as plaintext, so this can't be a CFN parameter.
+      # from SSM, not a CFN param - Git Sync would commit a param value as plaintext
       MasterUserPassword: !Sub "{{resolve:ssm-secure:/${AppName}/db-master-password}}"
       DBSubnetGroupName: !Ref DBSubnetGroup
       VPCSecurityGroups:
@@ -355,9 +351,8 @@ Resources:
               StringEquals:
                 sts:ExternalId: elasticbeanstalk
       ManagedPolicyArns:
-        # Base service-role policy - grants the core S3/CloudFormation/EC2/ASG permissions EB itself
-        # needs to orchestrate environment updates. Without it, EB's own service role (not the caller)
-        # hits Access Denied doing its internal S3/CFN work, independent of any caller credential type.
+        # EB needs these to run its own env updates - without them it hits Access Denied
+        # doing its internal S3/CFN work, no matter who's calling.
         - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkService
         - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
         - arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy
@@ -391,7 +386,7 @@ Resources:
       Roles:
         - !Ref EBInstanceRole
 
-  # IAM: GitHub Actions OIDC -> deploy role (no long-lived AWS keys in GitHub)
+  # GitHub OIDC -> deploy role, no long-lived keys in GitHub
   GitHubOIDCProvider:
     Type: AWS::IAM::OIDCProvider
     Condition: ShouldCreateOIDCProvider
@@ -419,7 +414,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                # Matches GitHub's immutable-ID subject format - pins trust to the repo's permanent identity, not its renamable name.
+                # pinned to GitHub's numeric IDs, not the renamable org/repo name
                 token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}@${GitHubOwnerId}/${GitHubRepo}@${GitHubRepoId}:ref:refs/heads/${GitHubBranch}"
       Policies:
         - PolicyName: DeployToElasticBeanstalk
@@ -442,11 +437,9 @@ Resources:
                   - elasticbeanstalk:DescribeApplicationVersions
                   - elasticbeanstalk:DescribeEvents
                 Resource: "*"
-              # UpdateEnvironment itself still can't be granted here - it fails under any assumed-role session,
-              # OIDC included (see README). Rather than a standing static credential, this role is allowed to
-              # mint/list/delete access keys for exactly one narrowly-scoped IAM user (infra/persistent-identity.yaml).
-              # The deploy job creates a fresh key, uses it once for UpdateEnvironment, and deletes it before the
-              # job ends - no long-lived secret exists in GitHub at any point.
+              # UpdateEnvironment fails under any assumed role, OIDC included - can't grant it here.
+              # Instead this role can mint/delete keys for one narrow IAM user (persistent-identity.yaml)
+              # so the deploy job gets a short-lived credential instead of a standing secret.
               - Effect: Allow
                 Action:
                   - iam:CreateAccessKey
@@ -461,13 +454,11 @@ Resources:
       ApplicationName: !Ref AppName
       Description: Python demo app - deployed by GitHub Actions after this stack exists.
 
-  # No VersionLabel: EB deploys its sample app so the environment comes up green immediately; the first
-  # GitHub Actions run then creates the real application version and updates the environment to it.
+  # no VersionLabel - EB ships its sample app first, GitHub Actions deploys the real one after
   EBEnvironment:
     Type: AWS::ElasticBeanstalk::Environment
-    # Waits for the full networking chain (subnets actually associated with a route table that
-    # has a working IGW route), not just the subnets existing - otherwise EB can start launching
-    # the instance before there's anywhere for it to route to, and hit the exact same failure.
+    # wait for the subnets to actually be routable, not just created, or EB can launch
+    # before there's anywhere to route to
     DependsOn:
       - PublicSubnetARouteTableAssociation
       - PublicSubnetBRouteTableAssociation
@@ -519,8 +510,7 @@ Resources:
           OptionName: DB_USER
           Value: !Ref DBMasterUsername
         - Namespace: aws:elasticbeanstalk:application:environment
-          # ssm-secure dynamic refs aren't supported in EB OptionSettings, so this carries only the parameter
-          # name - the instance resolves the actual secret itself at runtime via its own IAM role.
+          # EB options don't support ssm-secure refs - just the param name, the instance reads it itself
           OptionName: DB_PASSWORD_PARAM
           Value: !Sub "/${AppName}/db-master-password"
 

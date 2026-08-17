@@ -1,8 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Persistent identity for the Elastic Beanstalk lab's CI/CD pipeline - the
-  single-purpose UpdateEnvironment user (see README). Deploy once, keep
-  forever; not part of the ephemeral demo stack (template.yaml).
+  Single-purpose IAM user for UpdateEnvironment (see README). Deploy once
+  and keep - separate from the ephemeral stack in template.yaml.
 
 Parameters:
   AppName:
@@ -33,7 +32,7 @@ Resources:
                   - elasticbeanstalk:DescribeEnvironments
                   - elasticbeanstalk:DescribeEvents
                 Resource: "*"
-              # Downstream chain EB's UpdateEnvironment orchestration needs regardless of which principal calls it.
+              # everything EB's own UpdateEnvironment orchestration needs, regardless of caller
               - Effect: Allow
                 Action: s3:*
                 Resource:
@@ -88,7 +87,6 @@ Resources:
 Outputs:
   UserName:
     Description: >
-      No manual access key setup needed. GitHubActionsDeployRole (template.yaml) is granted
-      iam:CreateAccessKey/DeleteAccessKey/ListAccessKeys scoped to exactly this user's ARN, and
-      mints + destroys a fresh key inside every deploy job. Nothing is stored in GitHub.
+      No manual key setup - GitHubActionsDeployRole mints and deletes a key
+      for this user on every deploy job.
     Value: !Ref EBUpdateOnlyUser

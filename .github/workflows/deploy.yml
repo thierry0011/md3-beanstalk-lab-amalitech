@@ -55,9 +55,8 @@ jobs:
               --description "Deployed from $GITHUB_SHA"
           fi
 
-      # UpdateEnvironment fails under any assumed-role session (OIDC included) - see README. Instead of a
-      # standing static credential, mint a fresh access key for the narrowly-scoped update-only user, use it
-      # once, then delete it. No long-lived secret exists in GitHub at any point.
+      # UpdateEnvironment rejects assumed roles, so mint a short-lived key for the
+      # update-only user instead of keeping a static one in secrets
       - name: Clean up any stale ephemeral access keys
         run: |
           USER="${{ vars.EB_UPDATE_ONLY_USER_NAME }}"
@@ -76,19 +75,11 @@ jobs:
           echo "UPDATE_KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
           echo "UPDATE_KEY_SECRET=$KEY_SECRET" >> "$GITHUB_ENV"
 
-      # A brand-new access key is usable for direct EB/CFN API calls (update-environment,
-      # describe-*) within ~15s, but EB's internal, asynchronous CloudFormation UpdateStack -
-      # fired seconds after update-environment returns - reads its template from S3 under this
-      # same key, and that path propagates slower. Both real failures we saw ("S3 error: Access
-      # Denied" from CloudFormation) hit at ~20s post-creation; this wait puts the whole update
-      # past that window before it starts.
+      # give IAM a bit to propagate before EB's async CFN step needs this key
       - name: Wait for the ephemeral key to propagate
         run: sleep 30
 
-      # The key must stay alive for the WHOLE update, not just this call - update-environment returns as
-      # soon as EB accepts the request, but the actual S3/CloudFormation orchestration behind it (the
-      # presigned-URL hand-off from the README) runs asynchronously afterward, still under this identity.
-      # Deleting the key right after this step (as we used to) pulled it out from under that async work.
+      # key stays alive past this call - EB keeps using it for the async CFN work behind the scenes
       - name: Deploy new version to the environment (ephemeral key, kept alive until the update finishes)
         env:
           AWS_ACCESS_KEY_ID: ${{ env.UPDATE_KEY_ID }}
@@ -108,16 +99,8 @@ jobs:
           echo "::error::update-environment did not succeed after 6 attempts"
           exit 1
 
-      # Deliberately no ephemeral-key override here - DescribeEnvironments (all this loop calls) is
-      # already covered by the OIDC role from the "Configure AWS credentials" step.
-      #
-      # Not using `aws elasticbeanstalk wait environment-updated` here - that waiter only checks
-      # Status/Health, and update-environment returns before EB's status has actually flipped away
-      # from the previous "Ready". If the waiter's first poll lands on that stale pre-update state,
-      # it reports success immediately, before anything has actually deployed (this is what was
-      # letting the pipeline "succeed" while the live site kept serving the old version). Polling
-      # until VersionLabel itself matches $VERSION closes that gap, and logs each poll so a stuck
-      # or failed rollout is visible in the run output instead of a silent timeout.
+      # not using `wait environment-updated` - it only checks Status/Health, which can
+      # still read Ready from before the update kicked in. wait for VersionLabel itself.
       - name: Wait for the environment to finish updating
         run: |
           for i in $(seq 1 40); do
