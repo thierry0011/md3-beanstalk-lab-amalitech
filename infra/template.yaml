@@ -136,7 +136,7 @@ Resources:
         - Key: Name
           Value: !Sub "${AppName}-public-rt"
 
-  # needs the IGW actually attached first, !Ref alone won't order it
+  # needs the IGW actually attached first
   PublicRoute:
     Type: AWS::EC2::Route
     DependsOn: VpcGatewayAttachment
@@ -453,7 +453,7 @@ Resources:
                   - elasticbeanstalk:DescribeApplicationVersions
                   - elasticbeanstalk:DescribeEvents
                 Resource: "*"
-              # UpdateEnvironment fails under any assumed role, OIDC included - can't grant it here.
+              # UpdateEnvironment fails under any assumed role, OIDC included, can't grant it here.
               # Instead this role can mint/delete keys for one narrow IAM user (persistent-identity.yaml)
               # so the deploy job gets a short-lived credential instead of a standing secret.
               - Effect: Allow

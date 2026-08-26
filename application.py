@@ -116,7 +116,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 <body>
   <div class="card">
     <h1>Deployment Successful</h1>
-    <p>This Python app is running on AWS Elastic Beanstalk.</p>
+    <p>This Python app is running on AWS Elastic Beanstalk v2</p>
     <div class="row">
       <div class="stat">
         <div class="label">Version</div>
